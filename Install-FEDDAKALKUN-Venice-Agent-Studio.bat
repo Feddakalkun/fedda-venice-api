@@ -7,6 +7,11 @@ cd /d "%ROOT%"
 set "REPO_URL=https://github.com/Feddakalkun/fedda-venice-api.git"
 set "APP_DIR=FEDDAKALKUN-Venice-Agent-Studio"
 set "APP_ROOT=%ROOT%"
+set "PIP_FLAGS=--disable-pip-version-check --no-input --progress-bar off -q"
+set "DO_UPGRADE_TOOLS=0"
+if /I "%FEDDA_VERBOSE%"=="1" set "PIP_FLAGS="
+if /I "%FEDDA_UPGRADE_TOOLS%"=="1" set "DO_UPGRADE_TOOLS=1"
+for %%I in ("%ROOT:~0,-1%") do set "ROOT_NAME=%%~nxI"
 
 if not exist "%ROOT%requirements.txt" (
   if not exist "%ROOT%app.py" (
@@ -20,23 +25,38 @@ if not exist "%ROOT%requirements.txt" (
       exit /b 1
     )
 
-    if exist "%ROOT%%APP_DIR%\.git" (
+    if exist "%ROOT%\.git" (
       echo Existing app repo found. Pulling latest files...
-      set "APP_ROOT=%ROOT%%APP_DIR%\"
+      set "APP_ROOT=%ROOT%"
       cd /d "%APP_ROOT%"
       git pull --ff-only
       if errorlevel 1 goto :fail
     ) else (
-      if exist "%ROOT%%APP_DIR%" (
-        echo [ERROR] Folder "%ROOT%%APP_DIR%" exists but is not a git checkout.
+      set "CLONE_TARGET=%ROOT%%APP_DIR%"
+      set "CLONE_TMP_MODE=0"
+      if /I "%ROOT_NAME%"=="%APP_DIR%" (
+        set "CLONE_TARGET=%ROOT%__repo_tmp__"
+        set "CLONE_TMP_MODE=1"
+      )
+      if exist "%CLONE_TARGET%" (
+        echo [ERROR] Folder "%CLONE_TARGET%" already exists.
         echo Rename/delete that folder and run installer again.
         pause
         exit /b 1
       )
       echo Downloading app files from GitHub...
-      git clone "%REPO_URL%" "%ROOT%%APP_DIR%"
+      git clone "%REPO_URL%" "%CLONE_TARGET%"
       if errorlevel 1 goto :fail
-      set "APP_ROOT=%ROOT%%APP_DIR%\"
+
+      if "%CLONE_TMP_MODE%"=="1" (
+        echo Moving downloaded app files into current folder...
+        robocopy "%CLONE_TARGET%" "%ROOT%" /E >nul
+        if errorlevel 8 goto :fail
+        rmdir /s /q "%CLONE_TARGET%"
+        set "APP_ROOT=%ROOT%"
+      ) else (
+        set "APP_ROOT=%CLONE_TARGET%\"
+      )
       cd /d "%APP_ROOT%"
     )
     set "ROOT=%APP_ROOT%"
@@ -79,12 +99,16 @@ if not exist "%PY_EXE%" (
   )
 )
 
-echo Upgrading pip...
-"%PY_EXE%" -m pip install --upgrade pip wheel setuptools
-if errorlevel 1 goto :fail
+if "%DO_UPGRADE_TOOLS%"=="1" (
+  echo Upgrading pip/setuptools/wheel...
+  "%PY_EXE%" -m pip install %PIP_FLAGS% --upgrade pip wheel setuptools
+  if errorlevel 1 goto :fail
+) else (
+  echo Skipping pip/setuptools/wheel upgrade. Set FEDDA_UPGRADE_TOOLS=1 to enable.
+)
 
 echo Installing requirements...
-"%PY_EXE%" -m pip install -r "%ROOT%requirements.txt"
+"%PY_EXE%" -m pip install %PIP_FLAGS% -r "%ROOT%requirements.txt"
 if errorlevel 1 goto :fail
 
 echo.
