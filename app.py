@@ -62,6 +62,35 @@ CONSISTENCY_PRESETS = {
     "Balanced": "Keep character identity consistent while allowing natural variation in pose, expression, outfit details, and camera angle.",
     "Creative": "Use the same character as inspiration, but allow stronger stylistic and composition variation.",
 }
+CUTE_CELEB_SUGGESTIONS = [
+    "Sydney Sweeney",
+    "Jenna Ortega",
+    "Madelyn Cline",
+    "Anya Taylor-Joy",
+    "Margot Robbie",
+    "Ana de Armas",
+    "Lily Collins",
+    "Emma Stone",
+    "Natalie Portman",
+    "Gal Gadot",
+    "Zendaya",
+    "Dua Lipa",
+    "Sabrina Carpenter",
+    "Taylor Swift",
+    "Selena Gomez",
+    "Hailee Steinfeld",
+    "Alexandra Daddario",
+    "Kaya Scodelario",
+    "Phoebe Dynevor",
+    "Camila Mendes",
+]
+CELEB_STYLE_PRESETS = {
+    "Photoreal Cinematic": "photoreal skin texture, cinematic soft lighting, subtle film grain, high-detail eyes, natural facial proportions",
+    "Clean Studio": "high-end studio portrait lighting, clean neutral background, crisp details, polished beauty editorial look",
+    "Golden Hour Outdoor": "warm golden-hour sunlight, natural outdoor bokeh, soft shadows, realistic skin tones",
+    "Fashion Editorial": "editorial fashion framing, premium color grading, high-contrast but natural tones, magazine quality",
+    "Anime-Real Hybrid": "semi-real anime influence, clean lines, expressive eyes, realistic shading and texture balance",
+}
 
 APP_CSS = """
 :root {
@@ -498,6 +527,28 @@ def compose_prompt_with_consistency(prompt: str, core_prompt: str, lock_identity
     if not base:
         return prefix
     return f"{prefix} Scene request: {base}"
+
+
+def build_celebrity_mix_core(celeb_a: str, celeb_b: str, celeb_c: str, style_preset: str, extra_traits: str):
+    picks = []
+    for name in [celeb_a, celeb_b, celeb_c]:
+        name_clean = (name or "").strip()
+        if name_clean and name_clean not in picks:
+            picks.append(name_clean)
+    if len(picks) < 2:
+        return "", "Pick at least two celeb suggestions to build a stable blend."
+
+    style_text = CELEB_STYLE_PRESETS.get(style_preset or "", CELEB_STYLE_PRESETS["Photoreal Cinematic"])
+    traits = (extra_traits or "").strip()
+    mix_text = ", ".join(picks)
+    core = (
+        f"character blend inspired by {mix_text}, "
+        f"{style_text}, "
+        "consistent facial identity, natural body proportions, flattering composition"
+    )
+    if traits:
+        core = f"{core}, {traits}"
+    return core, f"Built core prompt from {len(picks)} celeb inspirations."
 
 
 def refresh_chat_models(api_key: str):
@@ -1346,6 +1397,34 @@ def build_app():
             with gr.Tab("Character Consistency"):
                 with gr.Row(elem_classes=["fk-workspace"]):
                     with gr.Column(scale=6, elem_classes=["fk-left"]):
+                        with gr.Accordion("Celeb Mix Suggestions", open=True):
+                            with gr.Row():
+                                celeb_a = gr.Dropdown(
+                                    label="Celeb A",
+                                    choices=CUTE_CELEB_SUGGESTIONS,
+                                    value="Sydney Sweeney",
+                                )
+                                celeb_b = gr.Dropdown(
+                                    label="Celeb B",
+                                    choices=CUTE_CELEB_SUGGESTIONS,
+                                    value="Jenna Ortega",
+                                )
+                                celeb_c = gr.Dropdown(
+                                    label="Celeb C (optional)",
+                                    choices=[""] + CUTE_CELEB_SUGGESTIONS,
+                                    value="",
+                                )
+                            celeb_style = gr.Dropdown(
+                                label="Style Preset",
+                                choices=list(CELEB_STYLE_PRESETS.keys()),
+                                value="Photoreal Cinematic",
+                            )
+                            celeb_traits = gr.Textbox(
+                                label="Extra Traits",
+                                lines=2,
+                                placeholder="Example: soft smile, almond eyes, long dark wavy hair, athletic slim build",
+                            )
+                            celeb_build_btn = gr.Button("Build Core Prompt From Suggestions")
                         consistency_core_prompt = gr.Textbox(
                             label="Character Core Prompt",
                             lines=8,
@@ -1446,6 +1525,12 @@ def build_app():
             inputs=[prompt, consistency_core_prompt, consistency_lock_identity, consistency_preset],
             outputs=[consistency_preview, consistency_status],
             api_name="preview_consistency_prompt",
+        )
+        celeb_build_btn.click(
+            fn=build_celebrity_mix_core,
+            inputs=[celeb_a, celeb_b, celeb_c, celeb_style, celeb_traits],
+            outputs=[consistency_core_prompt, consistency_status],
+            api_name="build_celebrity_mix_core",
         )
         def _safe_chat(*args):
             try:
