@@ -13,6 +13,14 @@ Venice API desktop-style Gradio app with:
 2. Run `Run-FEDDAKALKUN-Venice-Agent-Studio.bat`
 3. Paste your Venice API key in the app settings and save locally
 
+## Single-file install
+
+You can share only this file:
+
+`FEDDAKALKUN-Venice-Agent-Studio-OneClick-Install.bat`
+
+It downloads the latest app from GitHub, installs requirements, and leaves the user with the normal run/update BAT files.
+
 ## Updates
 
 If this app was installed from a git repository, run:
