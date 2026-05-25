@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import io
 import json
 import os
@@ -20,6 +20,24 @@ PROMPT_LIBRARY_PATH = APP_DIR / "prompt_library.json"
 IMAGE_HISTORY_PATH = OUTPUTS_DIR / "image_history.jsonl"
 DEFAULT_CHAT_MODEL = "zai-org-glm-5-1"
 DEFAULT_IMAGE_MODEL = "venice-sd35"
+PREFERRED_CHAT_MODELS = [
+    "zai-org-glm-5-1",
+    "zai-org-glm-5",
+    "z-ai-glm-5-turbo",
+    "venice-uncensored-r1",
+    "venice-uncensored-roleplay",
+    "qwen-3-235b",
+    "qwen-3-30b",
+]
+PREFERRED_IMAGE_MODELS = [
+    "chroma",
+    "venice-sd35",
+    "fluently-xl-final",
+    "flux",
+    "hidream",
+    "stable-diffusion",
+    "sdxl",
+]
 
 APP_CSS = """
 :root {
@@ -345,19 +363,32 @@ def fetch_models(api_key: str, model_type: str):
     return choices
 
 
+def _rank_model(model_id: str, preferred: list[str]) -> tuple:
+    mid = (model_id or "").lower()
+    for idx, token in enumerate(preferred):
+        if token.lower() in mid:
+            return (idx, mid)
+    return (len(preferred), mid)
+
+
+def _sorted_model_ids(choices: list[tuple[str, str]], preferred: list[str]) -> list[str]:
+    vals = [c[1] for c in choices if c[1]]
+    return sorted(vals, key=lambda v: _rank_model(v, preferred))
+
+
 def refresh_chat_models(api_key: str):
     choices = fetch_models(api_key, "text")
-    vals = [c[1] for c in choices]
-    default = vals[0] if vals else None
-    return gr.update(choices=vals, value=default), f"Loaded {len(vals)} chat models."
+    vals = _sorted_model_ids(choices, PREFERRED_CHAT_MODELS)
+    default = DEFAULT_CHAT_MODEL if DEFAULT_CHAT_MODEL in vals else (vals[0] if vals else None)
+    return gr.update(choices=vals, value=default), f"Loaded {len(vals)} chat models. Recommended agent models are sorted first."
 
 
 def refresh_image_models(api_key: str):
     choices = fetch_models(api_key, "image")
-    vals = [c[1] for c in choices]
+    vals = _sorted_model_ids(choices, PREFERRED_IMAGE_MODELS)
     chroma = [v for v in vals if "chroma" in v.lower()]
-    default = chroma[0] if chroma else (vals[0] if vals else None)
-    return gr.update(choices=vals, value=default), f"Loaded {len(vals)} image models."
+    default = chroma[0] if chroma else (DEFAULT_IMAGE_MODEL if DEFAULT_IMAGE_MODEL in vals else (vals[0] if vals else None))
+    return gr.update(choices=vals, value=default), f"Loaded {len(vals)} image models. Image generators are sorted with Chroma/preferred models first."
 
 
 def filter_chroma_models(api_key: str):
@@ -424,15 +455,46 @@ def chat_once(
     temperature: float,
     max_tokens: int,
     disable_thinking: bool,
+    agent_image_mode: bool,
+    agent_image_model: str,
+    agent_image_negative: str,
+    agent_image_width: int,
+    agent_image_height: int,
+    agent_image_steps: int,
+    agent_image_cfg: float,
+    agent_image_seed: int,
+    agent_image_safe_mode: bool,
 ):
     text = (user_text or "").strip()
     if not text:
-        return history, venice_messages, "", "Please enter a message."
+        return history, venice_messages, "", "Please enter a message.", None
 
     msgs = list(venice_messages or [])
     if system_prompt.strip() and (not msgs or msgs[0].get("role") != "system"):
         msgs.insert(0, {"role": "system", "content": system_prompt.strip()})
     msgs.append({"role": "user", "content": text})
+
+    if bool(agent_image_mode):
+        image, status, out_path = _generate_image_result(
+            api_key=api_key,
+            model=agent_image_model,
+            prompt=text,
+            negative_prompt=agent_image_negative,
+            width=agent_image_width,
+            height=agent_image_height,
+            steps=agent_image_steps,
+            cfg_scale=agent_image_cfg,
+            variants=1,
+            seed=agent_image_seed,
+            safe_mode=agent_image_safe_mode,
+            source="agent-chat",
+        )
+        assistant = f"Generated image with {agent_image_model}.\nSaved: {out_path}"
+        msgs.append({"role": "assistant", "content": assistant})
+        ui_history = list(history or [])
+        ui_history.append({"role": "user", "content": text})
+        ui_history.append({"role": "assistant", "content": assistant})
+        return ui_history, msgs, "", f"Agent image mode: {status}", image
 
     payload = {
         "model": model,
@@ -466,11 +528,11 @@ def chat_once(
         f"Chat ok in {dt:.2f}s | model={out.get('model', model)} | "
         f"tokens prompt={usage.get('prompt_tokens', '?')} completion={usage.get('completion_tokens', '?')}"
     )
-    return ui_history, msgs, "", status
+    return ui_history, msgs, "", status, None
 
 
 def clear_chat():
-    return [], [], "", "Chat cleared."
+    return [], [], "", "Chat cleared.", None
 
 
 def generate_image(
@@ -488,6 +550,37 @@ def generate_image(
 ):
     if not (prompt or "").strip():
         raise ValueError("Prompt is required.")
+    image, status, _ = _generate_image_result(
+        api_key=api_key,
+        model=model,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        variants=variants,
+        seed=seed,
+        safe_mode=safe_mode,
+        source="image-tab",
+    )
+    return image, status
+
+
+def _generate_image_result(
+    api_key: str,
+    model: str,
+    prompt: str,
+    negative_prompt: str,
+    width: int,
+    height: int,
+    steps: int,
+    cfg_scale: float,
+    variants: int,
+    seed: int,
+    safe_mode: bool,
+    source: str,
+):
     payload = {
         "model": model,
         "prompt": prompt.strip(),
@@ -527,6 +620,7 @@ def generate_image(
         "variants": int(variants),
         "seed": int(seed),
         "safe_mode": bool(safe_mode),
+        "source": source,
     }
     (out_path.with_suffix(".json")).write_text(json.dumps(meta, indent=2), encoding="utf-8")
     timing = out.get("timing", {}) or {}
@@ -557,7 +651,7 @@ def generate_image(
         f"queue={timing.get('inferenceQueueTime', '?')}ms infer={timing.get('inferenceDuration', '?')}ms\n"
         f"Saved: {out_path}\n{balance}"
     )
-    return image, status
+    return image, status, out_path
 
 
 def edit_image_from_reference(
@@ -947,6 +1041,7 @@ def build_app():
                 with gr.Row(elem_classes=["fk-workspace"]):
                     with gr.Column(scale=7, elem_classes=["fk-left"]):
                         chatbot = gr.Chatbot(label="Conversation", height=560)
+                        chat_image_out = gr.Image(label="Agent Image Preview", type="pil", height=320)
                         user_input = gr.Textbox(label="Message", placeholder="Ask anything...", lines=3)
                         with gr.Row():
                             send_btn = gr.Button("Send", variant="primary")
@@ -971,6 +1066,32 @@ def build_app():
                             disable_thinking = gr.Checkbox(label="Disable Thinking", value=True)
                             temperature = gr.Slider(0.0, 2.0, value=0.7, step=0.05, label="Temperature")
                             max_tokens = gr.Slider(64, 4096, value=1024, step=64, label="Max Tokens")
+                        with gr.Accordion("Agent Image Mode", open=True):
+                            agent_image_mode = gr.Checkbox(
+                                label="Generate image from chat message",
+                                value=False,
+                            )
+                            with gr.Row():
+                                agent_image_model = gr.Dropdown(
+                                    label="Image Model",
+                                    choices=[saved_image_model],
+                                    value=saved_image_model,
+                                )
+                                refresh_agent_img_btn = gr.Button("Refresh")
+                            agent_image_negative = gr.Textbox(
+                                label="Negative Prompt",
+                                value="low quality, blurry, distorted, bad anatomy, artifacts",
+                                lines=2,
+                            )
+                            with gr.Row():
+                                agent_image_width = gr.Slider(256, 1280, value=1024, step=64, label="Width")
+                                agent_image_height = gr.Slider(256, 1280, value=1024, step=64, label="Height")
+                            with gr.Row():
+                                agent_image_steps = gr.Slider(1, 30, value=8, step=1, label="Steps")
+                                agent_image_cfg = gr.Slider(0.1, 20.0, value=5.0, step=0.1, label="CFG")
+                            with gr.Row():
+                                agent_image_seed = gr.Number(label="Seed", value=0, precision=0)
+                                agent_image_safe_mode = gr.Checkbox(label="Safe Mode", value=True)
                 ui_history = gr.State([])
                 venice_messages = gr.State([])
 
@@ -1062,6 +1183,12 @@ def build_app():
             outputs=[image_model, image_status],
             api_name="refresh_image_models",
         ).then(fn=lambda: "[OK] Image models loaded. Chroma is preferred when available.", inputs=None, outputs=ready_status)
+        refresh_agent_img_btn.click(
+            fn=refresh_image_models,
+            inputs=api_key,
+            outputs=[agent_image_model, chat_status],
+            api_name="refresh_agent_image_models",
+        )
         chroma_btn.click(
             fn=filter_chroma_models,
             inputs=api_key,
@@ -1098,7 +1225,7 @@ def build_app():
             except Exception as e:
                 hist = list(args[3] or [])
                 msgs = list(args[4] or [])
-                return hist, msgs, "", f"Chat error: {e}"
+                return hist, msgs, "", f"Chat error: {e}", None
 
         def _safe_generate(*args):
             try:
@@ -1120,14 +1247,23 @@ def build_app():
                 temperature,
                 max_tokens,
                 disable_thinking,
+                agent_image_mode,
+                agent_image_model,
+                agent_image_negative,
+                agent_image_width,
+                agent_image_height,
+                agent_image_steps,
+                agent_image_cfg,
+                agent_image_seed,
+                agent_image_safe_mode,
             ],
-            outputs=[chatbot, venice_messages, user_input, chat_status],
+            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out],
             api_name="agent_chat",
         )
         clear_btn.click(
             fn=clear_chat,
             inputs=[],
-            outputs=[chatbot, venice_messages, user_input, chat_status],
+            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out],
             api_name="clear_chat",
         )
         gen_btn.click(
