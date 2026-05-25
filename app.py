@@ -57,6 +57,11 @@ IMAGE_INTENT_WORDS = [
     "text to image",
     "txt2img",
 ]
+CONSISTENCY_PRESETS = {
+    "Strict": "Preserve the same character identity, facial structure, body proportions, hairstyle, and overall visual DNA.",
+    "Balanced": "Keep character identity consistent while allowing natural variation in pose, expression, outfit details, and camera angle.",
+    "Creative": "Use the same character as inspiration, but allow stronger stylistic and composition variation.",
+}
 
 APP_CSS = """
 :root {
@@ -472,6 +477,29 @@ def _image_memory_system_message(assets: list[dict]) -> dict | None:
     return {"role": "system", "content": content}
 
 
+def build_consistency_prefix(core_prompt: str, lock_identity: bool, preset: str) -> str:
+    core = (core_prompt or "").strip()
+    if not core:
+        return ""
+    mode_text = CONSISTENCY_PRESETS.get((preset or "").strip(), CONSISTENCY_PRESETS["Balanced"])
+    lock_text = "Identity lock is ON." if bool(lock_identity) else "Identity lock is OFF."
+    return (
+        f"Character core reference: {core}. "
+        f"{mode_text} "
+        f"{lock_text}"
+    )
+
+
+def compose_prompt_with_consistency(prompt: str, core_prompt: str, lock_identity: bool, preset: str) -> str:
+    base = (prompt or "").strip()
+    prefix = build_consistency_prefix(core_prompt, lock_identity, preset)
+    if not prefix:
+        return base
+    if not base:
+        return prefix
+    return f"{prefix} Scene request: {base}"
+
+
 def refresh_chat_models(api_key: str):
     choices = fetch_models(api_key, "text")
     vals = _sorted_model_ids(choices, PREFERRED_CHAT_MODELS)
@@ -565,6 +593,9 @@ def chat_once(
     agent_image_cfg: float,
     agent_image_seed: int,
     agent_image_safe_mode: bool,
+    consistency_core_prompt: str,
+    consistency_lock_identity: bool,
+    consistency_preset: str,
     generated_assets: list,
 ):
     text = (user_text or "").strip()
@@ -585,6 +616,12 @@ def chat_once(
 
     if should_generate_image:
         image_prompt = _build_contextual_image_prompt(text, assets)
+        image_prompt = compose_prompt_with_consistency(
+            image_prompt,
+            consistency_core_prompt,
+            consistency_lock_identity,
+            consistency_preset,
+        )
         image, status, out_path = _generate_image_result(
             api_key=api_key,
             model=agent_image_model,
@@ -665,6 +702,13 @@ def clear_chat():
     return [], [], "", "Chat cleared.", None, [], _format_image_memory([])
 
 
+def preview_consistency_prompt(prompt: str, core_prompt: str, lock_identity: bool, preset: str):
+    composed = compose_prompt_with_consistency(prompt, core_prompt, lock_identity, preset)
+    if not (core_prompt or "").strip():
+        return composed, "No core prompt set. Using base prompt only."
+    return composed, f"Consistency preset '{preset}' applied."
+
+
 def generate_image(
     api_key: str,
     model: str,
@@ -677,13 +721,22 @@ def generate_image(
     variants: int,
     seed: int,
     safe_mode: bool,
+    consistency_core_prompt: str,
+    consistency_lock_identity: bool,
+    consistency_preset: str,
 ):
     if not (prompt or "").strip():
         raise ValueError("Prompt is required.")
+    final_prompt = compose_prompt_with_consistency(
+        prompt,
+        consistency_core_prompt,
+        consistency_lock_identity,
+        consistency_preset,
+    )
     image, status, _ = _generate_image_result(
         api_key=api_key,
         model=model,
-        prompt=prompt,
+        prompt=final_prompt,
         negative_prompt=negative_prompt,
         width=width,
         height=height,
@@ -1290,6 +1343,32 @@ def build_app():
                 )
                 cost_summary = gr.Textbox(label="Cost / Usage Summary", interactive=False, lines=4)
 
+            with gr.Tab("Character Consistency"):
+                with gr.Row(elem_classes=["fk-workspace"]):
+                    with gr.Column(scale=6, elem_classes=["fk-left"]):
+                        consistency_core_prompt = gr.Textbox(
+                            label="Character Core Prompt",
+                            lines=8,
+                            placeholder="Example: blend of two known cute celebs, soft cinematic skin texture, almond eyes, gentle smile, slim athletic frame, natural brunette hair, photoreal realism.",
+                        )
+                        consistency_lock_identity = gr.Checkbox(
+                            label="Lock Identity Across Generations",
+                            value=True,
+                        )
+                        consistency_preset = gr.Dropdown(
+                            label="Consistency Strength",
+                            choices=["Strict", "Balanced", "Creative"],
+                            value="Balanced",
+                        )
+                        consistency_preview_btn = gr.Button("Preview Composed Prompt")
+                        consistency_status = gr.Textbox(label="Consistency Status", interactive=False, lines=4)
+                    with gr.Column(scale=6, elem_classes=["fk-right"]):
+                        consistency_preview = gr.Textbox(
+                            label="Composed Prompt Preview",
+                            lines=16,
+                            interactive=False,
+                        )
+
         save_btn.click(
             fn=save_settings,
             inputs=[api_key, default_chat_model, default_image_model],
@@ -1362,6 +1441,12 @@ def build_app():
             outputs=template_pick,
             api_name="refresh_prompt_templates",
         )
+        consistency_preview_btn.click(
+            fn=preview_consistency_prompt,
+            inputs=[prompt, consistency_core_prompt, consistency_lock_identity, consistency_preset],
+            outputs=[consistency_preview, consistency_status],
+            api_name="preview_consistency_prompt",
+        )
         def _safe_chat(*args):
             try:
                 return chat_once(*args)
@@ -1400,6 +1485,9 @@ def build_app():
                 agent_image_cfg,
                 agent_image_seed,
                 agent_image_safe_mode,
+                consistency_core_prompt,
+                consistency_lock_identity,
+                consistency_preset,
                 generated_assets,
             ],
             outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out, generated_assets, agent_memory],
@@ -1425,6 +1513,9 @@ def build_app():
                 variants,
                 seed,
                 safe_mode,
+                consistency_core_prompt,
+                consistency_lock_identity,
+                consistency_preset,
             ],
             outputs=[image_out, image_status],
             api_name="generate_image",
