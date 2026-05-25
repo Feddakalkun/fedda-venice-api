@@ -19,7 +19,7 @@ OUTPUTS_DIR = APP_DIR / "outputs"
 PROMPT_LIBRARY_PATH = APP_DIR / "prompt_library.json"
 IMAGE_HISTORY_PATH = OUTPUTS_DIR / "image_history.jsonl"
 DEFAULT_CHAT_MODEL = "zai-org-glm-5-1"
-DEFAULT_IMAGE_MODEL = "venice-sd35"
+DEFAULT_IMAGE_MODEL = "chroma"
 PREFERRED_CHAT_MODELS = [
     "zai-org-glm-5-1",
     "zai-org-glm-5",
@@ -483,14 +483,19 @@ def refresh_image_models(api_key: str):
     choices = fetch_models(api_key, "image")
     vals = _sorted_model_ids(choices, PREFERRED_IMAGE_MODELS)
     chroma = [v for v in vals if "chroma" in v.lower()]
-    default = chroma[0] if chroma else (DEFAULT_IMAGE_MODEL if DEFAULT_IMAGE_MODEL in vals else (vals[0] if vals else None))
+    if DEFAULT_IMAGE_MODEL in vals:
+        default = DEFAULT_IMAGE_MODEL
+    elif chroma:
+        default = chroma[0]
+    else:
+        default = vals[0] if vals else DEFAULT_IMAGE_MODEL
     return gr.update(choices=vals, value=default), f"Loaded {len(vals)} image models. Image generators are sorted with Chroma/preferred models first."
 
 
 def filter_chroma_models(api_key: str):
     choices = fetch_models(api_key, "image")
     vals = [c[1] for c in choices if "chroma" in c[1].lower()]
-    default = vals[0] if vals else None
+    default = DEFAULT_IMAGE_MODEL if DEFAULT_IMAGE_MODEL in vals else (vals[0] if vals else DEFAULT_IMAGE_MODEL)
     msg = f"Found {len(vals)} model(s) containing 'chroma'."
     return gr.update(choices=vals, value=default), msg
 
@@ -1092,11 +1097,11 @@ def load_history_item(selected_id: str):
             target = e
             break
     if not target:
-        return "", "", None, 1024, 1024, 8, 7.5, 1, 0, True, "No history item selected."
+        return "", "", DEFAULT_IMAGE_MODEL, 1024, 1024, 8, 7.5, 1, 0, True, "No history item selected."
     return (
         target.get("prompt", ""),
         target.get("negative_prompt", ""),
-        target.get("model", None),
+        target.get("model", DEFAULT_IMAGE_MODEL),
         int(target.get("width", 1024)),
         int(target.get("height", 1024)),
         int(target.get("steps", 8)),
@@ -1133,6 +1138,7 @@ def delete_history_item(selected_id: str):
 
 def build_app():
     saved_key, saved_chat_model, saved_image_model = load_saved_settings()
+    saved_image_model = DEFAULT_IMAGE_MODEL
 
     with gr.Blocks(title="FEDDAKALKUN Venice Agent Studio") as app:
         gr.HTML(
