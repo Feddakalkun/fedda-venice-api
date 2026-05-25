@@ -400,6 +400,78 @@ def _looks_like_image_request(text: str) -> bool:
     return any(word in lower for word in IMAGE_INTENT_WORDS)
 
 
+def _format_image_memory(assets: list[dict]) -> str:
+    if not assets:
+        return "No images generated in this chat yet."
+    lines = []
+    for idx, asset in enumerate(assets[-5:], start=max(1, len(assets) - 4)):
+        prompt = str(asset.get("prompt", "")).strip()
+        if len(prompt) > 160:
+            prompt = prompt[:157] + "..."
+        lines.append(
+            f"{idx}. {asset.get('model', 'unknown')} | {asset.get('path', '')}\n"
+            f"   prompt: {prompt}"
+        )
+    return "\n".join(lines)
+
+
+def _build_contextual_image_prompt(user_text: str, assets: list[dict]) -> str:
+    text = (user_text or "").strip()
+    if not assets:
+        return text
+
+    lower = text.lower()
+    followup_tokens = [
+        "her",
+        "him",
+        "them",
+        "it",
+        "same",
+        "previous",
+        "last",
+        "again",
+        "different",
+        "change",
+        "place",
+        "pose",
+        "position",
+        "move",
+        "make this",
+        "make her",
+        "make him",
+    ]
+    if not any(token in lower for token in followup_tokens):
+        return text
+
+    last = assets[-1]
+    previous_prompt = str(last.get("prompt", "")).strip()
+    previous_model = str(last.get("model", "")).strip()
+    previous_path = str(last.get("path", "")).strip()
+    return (
+        "Create a new image as a follow-up to the previous generated image. "
+        "Use the previous prompt as visual continuity/context, while applying the new user request. "
+        f"Previous image model: {previous_model}. "
+        f"Previous saved image path for reference context: {previous_path}. "
+        f"Previous prompt: {previous_prompt}. "
+        f"New user request: {text}."
+    )
+
+
+def _image_memory_system_message(assets: list[dict]) -> dict | None:
+    if not assets:
+        return None
+    latest = assets[-1]
+    content = (
+        "Session image memory: The user has generated images in this chat. "
+        "When they refer to the latest image with words like it, this, her, him, same, previous, "
+        "or ask for changes, use this memory. "
+        f"Latest image model: {latest.get('model', 'unknown')}. "
+        f"Latest saved path: {latest.get('path', '')}. "
+        f"Latest prompt: {latest.get('prompt', '')}."
+    )
+    return {"role": "system", "content": content}
+
+
 def refresh_chat_models(api_key: str):
     choices = fetch_models(api_key, "text")
     vals = _sorted_model_ids(choices, PREFERRED_CHAT_MODELS)
@@ -488,10 +560,12 @@ def chat_once(
     agent_image_cfg: float,
     agent_image_seed: int,
     agent_image_safe_mode: bool,
+    generated_assets: list,
 ):
     text = (user_text or "").strip()
+    assets = list(generated_assets or [])
     if not text:
-        return history, venice_messages, "", "Please enter a message.", None
+        return history, venice_messages, "", "Please enter a message.", None, assets, _format_image_memory(assets)
 
     msgs = list(venice_messages or [])
     if system_prompt.strip() and (not msgs or msgs[0].get("role") != "system"):
@@ -505,10 +579,11 @@ def chat_once(
     )
 
     if should_generate_image:
+        image_prompt = _build_contextual_image_prompt(text, assets)
         image, status, out_path = _generate_image_result(
             api_key=api_key,
             model=agent_image_model,
-            prompt=text,
+            prompt=image_prompt,
             negative_prompt=agent_image_negative,
             width=agent_image_width,
             height=agent_image_height,
@@ -519,20 +594,36 @@ def chat_once(
             safe_mode=agent_image_safe_mode,
             source="agent-chat",
         )
+        assets.append({
+            "ts": time.strftime("%Y%m%d-%H%M%S"),
+            "model": agent_image_model,
+            "path": str(out_path),
+            "prompt": image_prompt,
+            "user_request": text,
+            "width": int(agent_image_width),
+            "height": int(agent_image_height),
+        })
+        assets = assets[-20:]
         assistant = (
             f"Generated image with {agent_image_model}.\n"
-            f"Prompt: {text}\n"
+            f"User request: {text}\n"
+            f"Image prompt: {image_prompt}\n"
             f"Saved: {out_path}"
         )
         msgs.append({"role": "assistant", "content": assistant})
         ui_history = list(history or [])
         ui_history.append({"role": "user", "content": text})
         ui_history.append({"role": "assistant", "content": assistant})
-        return ui_history, msgs, "", f"Agent image mode: {status}", image
+        return ui_history, msgs, "", f"Agent image mode: {status}", image, assets, _format_image_memory(assets)
+
+    api_msgs = list(msgs)
+    memory_msg = _image_memory_system_message(assets)
+    if memory_msg and api_msgs and api_msgs[-1].get("role") == "user":
+        api_msgs = api_msgs[:-1] + [memory_msg, api_msgs[-1]]
 
     payload = {
         "model": model,
-        "messages": msgs,
+        "messages": api_msgs,
         "temperature": float(temperature),
         "max_completion_tokens": int(max_tokens),
         "stream": False,
@@ -562,11 +653,11 @@ def chat_once(
         f"Chat ok in {dt:.2f}s | model={out.get('model', model)} | "
         f"tokens prompt={usage.get('prompt_tokens', '?')} completion={usage.get('completion_tokens', '?')}"
     )
-    return ui_history, msgs, "", status, None
+    return ui_history, msgs, "", status, None, assets, _format_image_memory(assets)
 
 
 def clear_chat():
-    return [], [], "", "Chat cleared.", None
+    return [], [], "", "Chat cleared.", None, [], _format_image_memory([])
 
 
 def generate_image(
@@ -1076,6 +1167,12 @@ def build_app():
                     with gr.Column(scale=7, elem_classes=["fk-left"]):
                         chatbot = gr.Chatbot(label="Conversation", height=560)
                         chat_image_out = gr.Image(label="Agent Image Preview", type="pil", height=320)
+                        agent_memory = gr.Textbox(
+                            label="Session Image Memory",
+                            value=_format_image_memory([]),
+                            lines=5,
+                            interactive=False,
+                        )
                         user_input = gr.Textbox(label="Message", placeholder="Ask anything...", lines=3)
                         with gr.Row():
                             send_btn = gr.Button("Send", variant="primary")
@@ -1133,6 +1230,7 @@ def build_app():
                                 agent_image_safe_mode = gr.Checkbox(label="Safe Mode", value=True)
                 ui_history = gr.State([])
                 venice_messages = gr.State([])
+                generated_assets = gr.State([])
 
             with gr.Tab("Image Generation"):
                 with gr.Row(elem_classes=["fk-workspace"]):
@@ -1264,7 +1362,8 @@ def build_app():
             except Exception as e:
                 hist = list(args[3] or [])
                 msgs = list(args[4] or [])
-                return hist, msgs, "", f"Chat error: {e}", None
+                assets = list(args[-1] or [])
+                return hist, msgs, "", f"Chat error: {e}", None, assets, _format_image_memory(assets)
 
         def _safe_generate(*args):
             try:
@@ -1295,14 +1394,15 @@ def build_app():
                 agent_image_cfg,
                 agent_image_seed,
                 agent_image_safe_mode,
+                generated_assets,
             ],
-            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out],
+            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out, generated_assets, agent_memory],
             api_name="agent_chat",
         )
         clear_btn.click(
             fn=clear_chat,
             inputs=[],
-            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out],
+            outputs=[chatbot, venice_messages, user_input, chat_status, chat_image_out, generated_assets, agent_memory],
             api_name="clear_chat",
         )
         gen_btn.click(
