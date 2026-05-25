@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+.venice_config.json
+prompt_library.json
+outputs/
+
+.gradio/
+.pytest_cache/
+*.log
