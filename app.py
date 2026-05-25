@@ -24,10 +24,13 @@ PREFERRED_CHAT_MODELS = [
     "zai-org-glm-5-1",
     "zai-org-glm-5",
     "z-ai-glm-5-turbo",
-    "venice-uncensored-r1",
-    "venice-uncensored-roleplay",
     "qwen-3-235b",
     "qwen-3-30b",
+    "venice-uncensored-r1",
+    "venice-uncensored-roleplay",
+    "llama",
+    "mistral",
+    "gemma",
 ]
 PREFERRED_IMAGE_MODELS = [
     "chroma",
@@ -37,6 +40,22 @@ PREFERRED_IMAGE_MODELS = [
     "hidream",
     "stable-diffusion",
     "sdxl",
+]
+IMAGE_INTENT_WORDS = [
+    "generate image",
+    "generate an image",
+    "make image",
+    "make an image",
+    "create image",
+    "create an image",
+    "draw",
+    "picture",
+    "photo",
+    "illustration",
+    "render",
+    "visualize",
+    "text to image",
+    "txt2img",
 ]
 
 APP_CSS = """
@@ -376,6 +395,11 @@ def _sorted_model_ids(choices: list[tuple[str, str]], preferred: list[str]) -> l
     return sorted(vals, key=lambda v: _rank_model(v, preferred))
 
 
+def _looks_like_image_request(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(word in lower for word in IMAGE_INTENT_WORDS)
+
+
 def refresh_chat_models(api_key: str):
     choices = fetch_models(api_key, "text")
     vals = _sorted_model_ids(choices, PREFERRED_CHAT_MODELS)
@@ -455,7 +479,7 @@ def chat_once(
     temperature: float,
     max_tokens: int,
     disable_thinking: bool,
-    agent_image_mode: bool,
+    agent_image_mode: str,
     agent_image_model: str,
     agent_image_negative: str,
     agent_image_width: int,
@@ -474,7 +498,13 @@ def chat_once(
         msgs.insert(0, {"role": "system", "content": system_prompt.strip()})
     msgs.append({"role": "user", "content": text})
 
-    if bool(agent_image_mode):
+    image_mode = (agent_image_mode or "Auto image requests").strip().lower()
+    should_generate_image = (
+        image_mode.startswith("always")
+        or (image_mode.startswith("auto") and _looks_like_image_request(text))
+    )
+
+    if should_generate_image:
         image, status, out_path = _generate_image_result(
             api_key=api_key,
             model=agent_image_model,
@@ -489,7 +519,11 @@ def chat_once(
             safe_mode=agent_image_safe_mode,
             source="agent-chat",
         )
-        assistant = f"Generated image with {agent_image_model}.\nSaved: {out_path}"
+        assistant = (
+            f"Generated image with {agent_image_model}.\n"
+            f"Prompt: {text}\n"
+            f"Saved: {out_path}"
+        )
         msgs.append({"role": "assistant", "content": assistant})
         ui_history = list(history or [])
         ui_history.append({"role": "user", "content": text})
@@ -1067,9 +1101,14 @@ def build_app():
                             temperature = gr.Slider(0.0, 2.0, value=0.7, step=0.05, label="Temperature")
                             max_tokens = gr.Slider(64, 4096, value=1024, step=64, label="Max Tokens")
                         with gr.Accordion("Agent Image Mode", open=True):
-                            agent_image_mode = gr.Checkbox(
-                                label="Generate image from chat message",
-                                value=False,
+                            agent_image_mode = gr.Dropdown(
+                                label="Image Behavior",
+                                choices=[
+                                    "Auto image requests",
+                                    "Chat only",
+                                    "Always generate image",
+                                ],
+                                value="Auto image requests",
                             )
                             with gr.Row():
                                 agent_image_model = gr.Dropdown(
