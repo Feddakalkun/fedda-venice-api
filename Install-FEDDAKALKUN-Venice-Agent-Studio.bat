@@ -6,6 +6,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 set "REPO_URL=https://github.com/Feddakalkun/fedda-venice-api.git"
 set "APP_DIR=FEDDAKALKUN-Venice-Agent-Studio"
+set "APP_ROOT=%ROOT%"
 
 if not exist "%ROOT%requirements.txt" (
   if not exist "%ROOT%app.py" (
@@ -21,7 +22,8 @@ if not exist "%ROOT%requirements.txt" (
 
     if exist "%ROOT%%APP_DIR%\.git" (
       echo Existing app repo found. Pulling latest files...
-      cd /d "%ROOT%%APP_DIR%"
+      set "APP_ROOT=%ROOT%%APP_DIR%\"
+      cd /d "%APP_ROOT%"
       git pull --ff-only
       if errorlevel 1 goto :fail
     ) else (
@@ -34,9 +36,10 @@ if not exist "%ROOT%requirements.txt" (
       echo Downloading app files from GitHub...
       git clone "%REPO_URL%" "%ROOT%%APP_DIR%"
       if errorlevel 1 goto :fail
-      cd /d "%ROOT%%APP_DIR%"
+      set "APP_ROOT=%ROOT%%APP_DIR%\"
+      cd /d "%APP_ROOT%"
     )
-    set "ROOT=%cd%\"
+    set "ROOT=%APP_ROOT%"
   ) else (
     echo [ERROR] requirements.txt is missing in:
     echo %ROOT%
@@ -44,6 +47,18 @@ if not exist "%ROOT%requirements.txt" (
     pause
     exit /b 1
   )
+)
+
+if not exist "%ROOT%requirements.txt" (
+  if exist "%APP_ROOT%requirements.txt" set "ROOT=%APP_ROOT%"
+)
+
+if not exist "%ROOT%requirements.txt" (
+  echo [ERROR] requirements.txt was not found after setup path resolution.
+  echo Expected path:
+  echo %ROOT%requirements.txt
+  pause
+  exit /b 1
 )
 
 set "VENV=%ROOT%.venv"
