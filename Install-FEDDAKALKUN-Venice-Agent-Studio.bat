@@ -5,11 +5,6 @@ chcp 65001 >nul
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
-if exist "disclaimer.md" (
-  type "disclaimer.md"
-  pause
-)
-
 set "VENV=%ROOT%.venv"
 set "PY_EXE=%VENV%\Scripts\python.exe"
 
